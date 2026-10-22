@@ -60,6 +60,57 @@ static int check_key_level(X509_STORE_CTX *ctx, X509 *cert);
 static int check_sig_level(X509_STORE_CTX *ctx, X509 *cert);
 static int check_curve(X509 *cert);
 
+/*
+ * Built-in public key blocklist.
+ *
+ * Each entry is the SHA-256 digest of the DER encoding of the
+ * SubjectPublicKeyInfo (SPKI) of a certificate public key.
+ *
+ * Any certificate chain containing a certificate whose public key is on this
+ * blocklist is rejected by X509_verify_cert() with X509_V_ERR_CERT_REVOKED.
+ */
+#define X509_PUBKEY_BLOCKLIST_NUM 8
+
+static const unsigned char x509_pubkey_blocklist[][SHA256_DIGEST_LENGTH] = {
+    /* EM-DV-TLS-CA-G3C */
+    {0x49, 0xdd, 0x35, 0x3d, 0xc2, 0xb9, 0x19, 0xa3, 0x77, 0x06, 0x45,
+     0x11, 0x7d, 0x0e, 0x60, 0xc1, 0x61, 0x15, 0xe7, 0xd1, 0xbc, 0x25,
+     0x9e, 0xef, 0xe7, 0x34, 0xb0, 0x0e, 0xa4, 0x34, 0xfe, 0x5f},
+    /* EM-DV-TLS-CA-G3B */
+    {0xeb, 0xed, 0x64, 0x75, 0xc2, 0xc2, 0xd8, 0x0f, 0xcb, 0x19, 0x9f,
+     0x3f, 0xe8, 0xdd, 0x6e, 0x6b, 0x3c, 0xe6, 0x0b, 0x77, 0xeb, 0x15,
+     0xd4, 0xe4, 0x2c, 0x3d, 0xec, 0x0c, 0x6f, 0x5b, 0x51, 0x05},
+    /* EM-EV-TLS-CA-G3C */
+    {0x5c, 0x06, 0x60, 0xa2, 0xb1, 0x64, 0x91, 0x0d, 0x8f, 0xf5, 0x89,
+     0xc1, 0x8e, 0x14, 0x55, 0x2e, 0x9e, 0x0e, 0xc2, 0x37, 0xdc, 0xef,
+     0xe2, 0xcb, 0x73, 0x6d, 0x41, 0xa4, 0x81, 0x1f, 0x81, 0xa0},
+    /* EM-OV-TLS-CA-G3B */
+    {0x43, 0xbf, 0xfa, 0x19, 0xd6, 0xef, 0x65, 0x14, 0x51, 0xf6, 0x84,
+     0x1e, 0x01, 0x99, 0x31, 0xe9, 0x6f, 0x6f, 0x2e, 0xae, 0xff, 0x28,
+     0xab, 0x4b, 0x6f, 0x1c, 0xe4, 0x57, 0x6d, 0xe2, 0x71, 0x7b},
+    /* EM-OV-TLS-CA-G3C */
+    {0x63, 0xec, 0xef, 0xee, 0x43, 0x1d, 0x49, 0x52, 0x3b, 0xc1, 0x13,
+     0x6c, 0x4e, 0x72, 0xd0, 0x20, 0x6a, 0x47, 0x70, 0x86, 0xca, 0xf6,
+     0x06, 0xcd, 0x5c, 0xf0, 0x25, 0x68, 0x6c, 0x10, 0x9c, 0xf8},
+    /* EM-EV-TLS-CA-G3B */
+    {0xe0, 0x25, 0x4c, 0x7f, 0xcd, 0xc2, 0x65, 0xe2, 0xf0, 0xf8, 0xa4,
+     0x28, 0xda, 0xbb, 0x75, 0xab, 0x4a, 0xe0, 0x39, 0xb4, 0x87, 0x2d,
+     0x62, 0xf5, 0xee, 0x57, 0xf0, 0x87, 0x7d, 0x5a, 0x8a, 0x41},
+    /* EM-OV-CS-CA-G3C */
+    {0x92, 0xc0, 0x63, 0xd6, 0x7e, 0x8f, 0x14, 0xdb, 0x71, 0xd2, 0x88, 0xe1,
+     0x12, 0x66, 0xff, 0xda, 0xf6, 0x9c, 0xbf, 0x11, 0x5f, 0x7b, 0xab, 0x14,
+     0xf3, 0xbc, 0x2f, 0x68, 0xd2, 0x5e, 0x0e, 0x30},
+    /* EM-OV-CS-CA-G3B */
+    {0xec, 0x4f, 0xfa, 0x1a, 0xd0, 0xac, 0x88, 0x08, 0x13, 0x14, 0xb7, 0xaa,
+     0xff, 0xef, 0x6a, 0x91, 0xf9, 0x7c, 0xd5, 0x72, 0x91, 0xbb, 0x5b, 0xa6,
+     0x86, 0xc5, 0x41, 0x5f, 0x5e, 0xb4, 0xf6, 0xb6}
+};
+
+static int x509_pubkey_sha256(const X509 *x,
+                              unsigned char sha256[SHA256_DIGEST_LENGTH]);
+static int x509_pubkey_blocked(const X509 *x);
+static int check_pubkey_blocklist(X509_STORE_CTX *ctx);
+
 static int get_crl_score(X509_STORE_CTX *ctx, X509 **pissuer,
                          unsigned int *preasons, X509_CRL *crl, X509 *x);
 static int get_crl_delta(X509_STORE_CTX *ctx,
@@ -180,6 +231,89 @@ static int verify_cb_crl(X509_STORE_CTX *ctx, int err)
     return ctx->verify_cb(0, ctx);
 }
 
+/*-
+ * Compute the SHA-256 digest of the DER encoding of the public key of
+ * certificate |x| (the SubjectPublicKeyInfo).  Returns 1 on success, 0 on
+ * error.
+ *
+ * The SPKI is serialized directly from the certificate's SubjectPublicKeyInfo
+ * (i2d_X509_PUBKEY). The digest is computed with the low-level SHA-256 interface.
+ */
+static int x509_pubkey_sha256(const X509 *x,
+                              unsigned char sha256[SHA256_DIGEST_LENGTH])
+{
+    X509_PUBKEY *pubkey;
+    SHA256_CTX sha256ctx;
+    unsigned char buf[1024];
+    unsigned char *der = buf, *p;
+    int len;
+
+    pubkey = X509_get_X509_PUBKEY(x);
+    if (pubkey == NULL) {
+        return 0;
+    }
+    len = i2d_X509_PUBKEY(pubkey, NULL);
+    if (len <= 0) {
+        return 0;
+    }
+    if ((size_t)len > sizeof(buf)) {
+        der = OPENSSL_malloc((size_t)len);
+        if (der == NULL) {
+            return 0;
+        }
+    }
+    p = der;
+    if (i2d_X509_PUBKEY(pubkey, &p) != len
+            || !SHA256_Init(&sha256ctx)
+            || !SHA256_Update(&sha256ctx, der, (size_t)len)
+            || !SHA256_Final(sha256, &sha256ctx)) {
+        if (der != buf) {
+            OPENSSL_free(der);
+        }
+        return 0;
+    }
+    if (der != buf) {
+        OPENSSL_free(der);
+    }
+    return 1;
+}
+
+/* Return 1 if the public key of certificate |x| is on the built-in blocklist. */
+static int x509_pubkey_blocked(const X509 *x)
+{
+    unsigned char sha256[SHA256_DIGEST_LENGTH];
+    size_t i;
+
+    if (!x509_pubkey_sha256(x, sha256)) {
+        return 0;
+    }
+    for (i = 0; i < X509_PUBKEY_BLOCKLIST_NUM; i++) {
+        if (CRYPTO_memcmp(sha256, x509_pubkey_blocklist[i], sizeof(sha256)) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*-
+ * Reject the verification if any certificate in the chain has a public key
+ * that is on the built-in blocklist.  Returns 1 if the chain is acceptable
+ * (no certificate matched), 0 if the chain must be rejected.
+ */
+static int check_pubkey_blocklist(X509_STORE_CTX *ctx)
+{
+    int i, n = sk_X509_num(ctx->chain);
+
+    for (i = 0; i < n; i++) {
+        X509 *cert = sk_X509_value(ctx->chain, i);
+
+        if (x509_pubkey_blocked(cert)) {
+            CB_FAIL_IF(1, ctx, cert, i, X509_V_ERR_CERT_REVOKED);
+        }
+    }
+    return 1;
+}
+
 static int check_auth_level(X509_STORE_CTX *ctx)
 {
     int i;
@@ -293,6 +427,15 @@ int X509_verify_cert(X509_STORE_CTX *ctx)
                ctx, ctx->cert, 0, X509_V_ERR_EE_KEY_TOO_SMALL);
 
     ret = DANETLS_ENABLED(ctx->dane) ? dane_verify(ctx) : verify_chain(ctx);
+
+    /*
+     * Intercept chains that contain a certificate whose public key is on the
+     * built-in blocklist.  Only intercept chains that would otherwise verify
+     * successfully; if the chain already failed (ret <= 0), keep the original
+     * error instead of masking it with the blocklist rejection.
+     */
+    if (ret > 0 && !check_pubkey_blocklist(ctx))
+        return 0;
 
     /*
      * Safety-net.  If we are returning an error, we must also set ctx->error,
